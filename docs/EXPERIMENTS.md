@@ -35,6 +35,7 @@
 | E16 | 11-21 | E15 A 再续训 1,000 步 | 已完成，累计 2,800 步 | 23.8549 → 24.4203 dB，AdamW 动量重置 |
 | E17 | 11-21 | 三平面扩通道并投影为 368 维点特征 | 随机初始化 1,000 步完成 | 23.2372 dB，相对 E13 增加 0.2265 dB |
 | E18 | 11-21 | 三平面直接拼接 384 维点特征 | 随机初始化 2,000 步完成 | 1,000 步 23.4963 dB，2,000 步 24.7385 dB |
+| E19 | 11-21 | 384 维模型恢复完整状态继续训练 | 累计 4,000 步完成 | 25.9451 dB，本轮提高 1.2066 dB |
 
 ## E01 原始 10 视角微调
 
@@ -352,6 +353,30 @@ AdamW 学习率为 5e-5、betas=(0.9,0.95)、矩阵参数 weight decay 为 0.02�
 主要文件包括 config.yaml、metrics.csv、summary.json、curves.png、comparison.png、各评价点的预测体及对应 step500/1000/1500/2000.pth。
 
 证据位于 `results/XLRM/lndb0045_point384_scratch2000_20261121/` 的 `config.yaml`、`summary.json`、`metrics.csv`、`README.md` 和 `step2000.pth`。复现入口为 `tools/fit_wide_point_features.py --direct-features --steps 2000 --eval-every 500`。
+
+## E19 384 维模型完整状态续训至 4,000 步
+
+2026-11-21 完成。以 E18 第 2,000 步完整 checkpoint 为起点，再训练 2,000 步，每 500 步评价并保存完整状态。
+
+恢复模型、AdamW 动量、PyTorch/CUDA RNG 和独立点生成器状态，继续使用原采样序列。起点预测体与 E18 第 2,000 步逐元素一致，最终 AdamW 更新计数为 4,000。
+
+| 累计训练步数 | 同一 128³ 留出网格整卷 PSNR / dB |
+|---|---|
+| 2000 | 24.7385 |
+| 2500 | 25.0850 |
+| 3000 | 25.4561 |
+| 3500 | 25.6987 |
+| 4000 | 25.9451 |
+
+本轮提高 1.2066 dB，最后 500 步增加 0.2464 dB，当前曲线仍在上升。
+
+继续使用 LNDb-0045 的 24 视角和全部可训练参数。三平面各 128 通道，384 维直接输入 MLP。CT 点 MSE，每步 10,000 点，AdamW 学习率 5e-5、betas=(0.9,0.95)、矩阵参数 weight decay=0.02、梯度裁剪=0.5，BF16 autocast，沿用原 dropout。
+
+评价保留相同 128³ 偶数坐标留出网格和 [0,1] 裁剪。第 2,500、3,000、3,500、4,000 步均保存模型、优化器、随机数和点生成器状态，最终文件为 step4000.pth。
+
+主要结果文件为 config.yaml、metrics.csv、summary.json、curves.png、comparison.png。summary.json 的 history 保存从随机初始化起的完整评价历史。
+
+证据位于 `results/XLRM/lndb0045_point384_resume4000_20261121/` 的 `config.yaml`、`summary.json`、`metrics.csv`、`README.md` 和 `step4000.pth`。复现入口为 `tools/fit_wide_point_features.py --resume <step2000.pth> --direct-features --steps 4000 --eval-every 500`。
 
 ## 待验证的探索
 
