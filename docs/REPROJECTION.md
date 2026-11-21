@@ -108,7 +108,7 @@ docker exec -e CUDA_VISIBLE_DEVICES=0 -e TORCHDYNAMO_DISABLE=1 \
   --output /data/experiment/sasplat/results/XLRM/lndb0045_reprojection368_check_20261121/checks.json
 ```
 
-以下命令可从已保存的第 100 步继续至累计 5,000 步，每 500 步评价；尚未执行这次长期训练。输出目录需不存在。
+本次单病例续训已在 GPU0 启动，从第 100 步完整状态继续至累计 5,000 步，每 500 步评价。起点预测逐元素一致，进展见 E23 及输出目录中的 progress.json、metrics.csv。下面保留本次启动的等效命令，重跑时需使用新的输出目录。
 
 ```bash
 docker exec -e CUDA_VISIBLE_DEVICES=0 -e TORCHDYNAMO_DISABLE=1 \
@@ -123,4 +123,4 @@ docker exec -e CUDA_VISIBLE_DEVICES=0 -e TORCHDYNAMO_DISABLE=1 \
   --resume /data/experiment/sasplat/results/XLRM/lndb0045_reprojection368_scratch100_20261121/step100.pth
 ```
 
-宿主机 `/data/wangcy` 挂载为容器 `/data`，`/home/wangcy/projects` 挂载为 `/workspace`。普通多患者训练可在新的输出工作目录中运行 `python -m x_ggrm.runners.train.lndb_lrm --config /workspace/recon/X_videoDiffusion/configs/train-lrm-lndb-reprojection.yaml`；以上两类完整训练均尚未执行。
+宿主机 `/data/wangcy` 挂载为容器 `/data`，`/home/wangcy/projects` 挂载为 `/workspace`。普通多患者训练可在新的输出工作目录中运行 `python -m x_ggrm.runners.train.lndb_lrm --config /workspace/recon/X_videoDiffusion/configs/train-lrm-lndb-reprojection.yaml`；单病例续训已启动，多患者训练尚未执行。
