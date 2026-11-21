@@ -1,0 +1,85 @@
+experiment:
+  type: lrm
+  seed: 42
+  parent: lrm-cbct
+  child: lndb10_distill
+model:
+  rendering_samples_per_ray: 128
+  encoder_layers: 12
+  encoder_heads: 8
+  encoder_dim: 384
+  transformer_dim: 512
+  transformer_layers: 12
+  transformer_heads: 8
+  triplane_low_res: 32
+  triplane_high_res: 64
+  triplane_dim: 32
+  encoder_type: patchify_linear
+  encoder_model_name: dinov2_vits14_reg
+  encoder_feat_dim: 384
+  encoder_freeze: false
+  volume_grid_size: 256
+  view_encoder_dropout: 0.0
+dataset:
+  render_image:
+    low: 64
+    high: 128
+    region: 64
+  input_image_res: 224
+  nums_input_view: 10
+  nums_target_view: 2
+  num_train_workers: 4
+  num_val_workers: 2
+  pin_mem: true
+  lndb_root: ./data/lndb
+train:
+  mixed_precision: bf16
+  find_unused_parameters: false
+  freeze_point_decoder: false
+  loss:
+    pixel_weight: 0.75
+    tv_weight: 0.0005
+    vol_mse_weight: 1.5
+  optim:
+    lr: 0.0001
+    weight_decay: 0.02
+    beta1: 0.9
+    beta2: 0.95
+    clip_grad_norm: 0.5
+  scheduler:
+    type: cosine
+    warmup_real_iters: 216
+  batch_size: 1
+  accum_steps: 1
+  epochs: 20
+  debug_global_steps: null
+val:
+  batch_size: 1
+  global_step_period: 432
+  debug_batches: null
+saver:
+  auto_resume: true
+  load_model: null
+  checkpoint_root: ./checkpoints
+  checkpoint_global_steps: 216
+  checkpoint_keep_level: 5
+logger:
+  stream_level: INFO
+  log_level: INFO
+  log_root: ./logs
+  tracker_root: ./trackers
+  enable_profiler: false
+  trackers:
+  - tensorboard
+  image_monitor:
+    train_global_steps: 200
+    samples_per_log: 2
+compile:
+  suppress_errors: true
+  print_specializations: true
+  disable: true
+
+distillation:
+  teacher_views: 24
+  teacher_checkpoint: null
+  weight: 0.1
