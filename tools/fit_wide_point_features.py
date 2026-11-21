@@ -27,8 +27,9 @@ def main():
     parser.add_argument('--e13-root', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--resume', type=Path, default=None, help='Restore a full training checkpoint')
-    parser.add_argument('--direct-features', action='store_true', help='Use the concatenated 384D features directly')
-    parser.add_argument('--reprojection', action='store_true', help='Concatenate 240D multi-scale local projection features')
+    parser.add_argument('--direct-features', action='store_true', help='Use concatenated triplane features without a linear projection')
+    parser.add_argument('--reprojection', action='store_true', help='Concatenate the configured multi-scale local projection features')
+    parser.add_argument('--triplane-channels', type=int, default=None, help='Override channels per plane')
     parser.add_argument('--steps', type=int, default=1000)
     parser.add_argument('--eval-every', type=int, default=None)
     args = parser.parse_args()
@@ -41,10 +42,17 @@ def main():
     torch.manual_seed(42)
     cfg = OmegaConf.load(args.config)
     cfg.dataset.lndb_root = str(args.dataset_root)
-    cfg.model.triplane_dim = 128
+    if args.triplane_channels is not None:
+        cfg.model.triplane_dim = args.triplane_channels
+    elif not args.reprojection:
+        cfg.model.triplane_dim = 128
     cfg.model.point_feature_dim = None if args.direct_features else 368
     cfg.model.point_decoder_hidden_dim = 128
-    cfg.model.reprojection_channels = [16, 32, 64, 128] if args.reprojection else None
+    cfg.model.reprojection_channels = (cfg.model.get('reprojection_channels') or [16, 32, 64, 128]) if args.reprojection else None
+    plane_channels = int(cfg.model.triplane_dim)
+    sampled_dim = 3 * plane_channels
+    local_channels = list(cfg.model.reprojection_channels) if args.reprojection else None
+    local_dim = sum(local_channels) if local_channels else 0
     cfg.saver.load_model = None
     cfg.train.freeze_point_decoder = False
     cfg.distillation = dict(weight=0.)
@@ -70,8 +78,8 @@ def main():
     query = torch.stack(torch.meshgrid(axis, axis, axis, indexing='ij'), -1).reshape(1, -1, 3).float() / 255 * 2 - 1
     rng = torch.Generator(device='cuda').manual_seed(prior['point_seed'])
     model = ModelLRM(**cfg.model, image_res=cfg.dataset.input_image_res).cuda()
-    triplane_feature_dim = 384 if args.direct_features else 368
-    feature_dim = triplane_feature_dim + (240 if args.reprojection else 0)
+    triplane_feature_dim = sampled_dim if args.direct_features else 368
+    feature_dim = triplane_feature_dim + local_dim
     assert isinstance(model.synthesizer.decoder.feature_projection, torch.nn.Identity) == args.direct_features
     assert model.synthesizer.decoder.net[0].in_features == feature_dim
     assert all(p.requires_grad for p in model.parameters())
@@ -111,7 +119,7 @@ def main():
         with torch.autocast('cuda', dtype=torch.bfloat16):
             context = model.encode(inputs, input_cameras)
             planes = context['planes']
-            assert planes.shape == (1, 3, 128, 64, 64)
+            assert planes.shape == (1, 3, plane_channels, cfg.model.triplane_high_res, cfg.model.triplane_high_res)
             predictions = torch.cat([model.query_points(context, q)['sigma'].reshape(-1).float().cpu()
                                      for q in query.split(131072, dim=1)]).numpy().reshape(reference.shape)
         if args.resume and step == start_step:
@@ -183,11 +191,11 @@ def main():
                    points_per_step=10000,
                    point_hash_scope=(f'E13 probe batches {[s for s in (1,100,300,600,1000) if s <= args.steps]}'
                                      if start_step == 0 else 'checkpoint point generator state restored'),
-                   views=prior['views'], triplane_channels=128, sampled_feature_dim=384,
+                   views=prior['views'], triplane_channels=plane_channels, sampled_feature_dim=sampled_dim,
                    point_feature_dim=feature_dim,
-                   reprojection_channels=[16,32,64,128] if args.reprojection else None,
-                   reprojection_feature_dim=240 if args.reprojection else 0,
-                   feature_projection='Identity' if args.direct_features else 'trainable Linear(384,368)',
+                   reprojection_channels=local_channels,
+                   reprojection_feature_dim=local_dim,
+                   feature_projection='Identity' if args.direct_features else f'trainable Linear({sampled_dim},368)',
                    mlp_widths=[feature_dim,128,128,128,1], all_parameters_trainable=True,
                    optimizer=dict(name='AdamW', lr=5e-5, betas=[.9,.95], matrix_weight_decay=.02, gradient_clip=.5),
                    evaluation='same E13 even native voxel 128^3 grid; [0,1] clipping',

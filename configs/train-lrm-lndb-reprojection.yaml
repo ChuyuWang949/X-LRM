@@ -2,7 +2,7 @@ experiment:
   type: lrm
   seed: 42
   parent: lrm-cbct
-  child: lndb24_reprojection
+  child: lndb24_reprojection368
 model:
   rendering_samples_per_ray: 128
   encoder_layers: 12
@@ -13,7 +13,7 @@ model:
   transformer_heads: 8
   triplane_low_res: 32
   triplane_high_res: 64
-  triplane_dim: 128
+  triplane_dim: 48
   encoder_type: patchify_linear
   encoder_model_name: dinov2_vits14_reg
   encoder_feat_dim: 384
@@ -27,7 +27,7 @@ model:
   - 16
   - 32
   - 64
-  - 128
+  - 112
 dataset:
   render_image:
     low: 64

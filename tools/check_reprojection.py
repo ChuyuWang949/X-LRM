@@ -90,10 +90,10 @@ def main():
     result['dataset_camera_image_order'] = 'passed'
 
     # Original parameter names/shapes and predictions remain usable with the branch disabled.
-    legacy_config = OmegaConf.to_container(cfg.model)
+    saved = torch.load(args.legacy_checkpoint, map_location='cpu', weights_only=True, mmap=True)
+    legacy_config = dict(saved['config']['model'])
     legacy_config['reprojection_channels'] = None
     legacy = ModelLRM(**legacy_config, image_res=224).cuda().eval()
-    saved = torch.load(args.legacy_checkpoint, map_location='cpu', weights_only=True, mmap=True)
     legacy.load_state_dict(saved['model'], strict=True)
     with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
         query = points[:, :1000]
@@ -120,10 +120,10 @@ def main():
     grads = dict(local_encoder=model.reprojection_encoder.stages[0][0].weight.grad.norm().item(),
                  triplane_upsampler=model.upsampler.weight.grad.norm().item(),
                  decoder=model.synthesizer.decoder.net[0].weight.grad.norm().item(),
-                 local_decoder_columns=model.synthesizer.decoder.net[0].weight.grad[:, 384:].norm().item())
+                 local_decoder_columns=model.synthesizer.decoder.net[0].weight.grad[:, 3*cfg.model.triplane_dim:].norm().item())
     assert all(np.isfinite(value) and value > 0 for value in grads.values())
     result.update(gradient_norms=grads, ct_mse=loss.item(), decoder_input_dim=model.synthesizer.decoder.net[0].in_features)
-    assert result['decoder_input_dim'] == 624
+    assert result['decoder_input_dim'] == 3*cfg.model.triplane_dim + sum(cfg.model.reprojection_channels)
     model.zero_grad(set_to_none=True)
     model.eval()
     with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
