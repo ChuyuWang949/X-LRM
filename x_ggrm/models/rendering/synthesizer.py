@@ -31,14 +31,19 @@ class OSGDecoder(nn.Module):
                  n_features: int,
                  hidden_dim: int = 128,
                  num_layers: int = 4,
-                 activation: nn.Module = nn.ReLU
+                 activation: nn.Module = nn.ReLU,
+                 point_feature_dim: int | None = None,
                  ):
 
         super().__init__()
 
-        # --- 网络定义部分保持不变 ---
+        feature_dim = 3 * n_features if point_feature_dim is None else point_feature_dim
+        self.feature_projection = (
+            nn.Identity() if point_feature_dim is None
+            else nn.Linear(3 * n_features, point_feature_dim)
+        )
         layers = [
-            nn.Linear(3 * n_features, hidden_dim),
+            nn.Linear(feature_dim, hidden_dim),
             activation(),
         ]
         for _ in range(num_layers - 2):
@@ -83,6 +88,7 @@ class OSGDecoder(nn.Module):
         N, M, C = x.shape
         x = x.contiguous().view(N * M, C)
 
+        x = self.feature_projection(x)
         x = self.net(x)
         x = x.view(N, M, -1)
 
@@ -108,7 +114,8 @@ class TriplaneSynthesizer(nn.Module):
         'sampler_bbox_max': 1.,
     }
 
-    def __init__(self, triplane_dim: int, samples_per_ray: int, point_decoder_hidden_dim: int = 128):
+    def __init__(self, triplane_dim: int, samples_per_ray: int, point_decoder_hidden_dim: int = 128,
+                 point_feature_dim: int | None = None):
         super().__init__()
 
         # attributes
@@ -124,7 +131,8 @@ class TriplaneSynthesizer(nn.Module):
         self.ray_sampler = RaySampler()
 
         # modules
-        self.decoder = OSGDecoder(n_features=triplane_dim, hidden_dim=point_decoder_hidden_dim)
+        self.decoder = OSGDecoder(n_features=triplane_dim, hidden_dim=point_decoder_hidden_dim,
+                                  point_feature_dim=point_feature_dim)
 
     def forward(self, planes, cameras, anchors, resolutions, region_size: int):
         # planes: (N, 3, D', H', W')

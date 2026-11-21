@@ -48,6 +48,7 @@ class ModelLRM(nn.Module):
         view_encoder_dropout: float | None = None,
         patch_pos_embed: bool = False,
         point_decoder_hidden_dim: int = 128,
+        point_feature_dim: int | None = None,
         ) -> None:
         super().__init__()
         
@@ -101,7 +102,7 @@ class ModelLRM(nn.Module):
         )
         self.synthesizer = TriplaneSynthesizer(
             triplane_dim=triplane_dim, samples_per_ray=rendering_samples_per_ray,
-            point_decoder_hidden_dim=point_decoder_hidden_dim,
+            point_decoder_hidden_dim=point_decoder_hidden_dim, point_feature_dim=point_feature_dim,
         )
 
     @staticmethod
