@@ -84,16 +84,19 @@ def main():
     assert model.synthesizer.decoder.net[0].in_features == feature_dim
     assert all(p.requires_grad for p in model.parameters())
     parameters = list(model.parameters())
+    fused_adamw = bool(cfg.train.optim.get('fused', False))
     optimizer = torch.optim.AdamW([
         dict(params=[p for p in parameters if p.ndim >= 2], weight_decay=.02),
         dict(params=[p for p in parameters if p.ndim < 2], weight_decay=0.)],
-        lr=5e-5, betas=(.9, .95))
+        lr=5e-5, betas=(.9, .95), fused=fused_adamw)
     start_step = 0
     previous_history = []
     if args.resume:
         saved = torch.load(args.resume, map_location='cpu', weights_only=True)
         model.load_state_dict(saved['model'], strict=True)
-        optimizer.load_state_dict(saved['optimizer'])
+        optimizer.load_state_dict(dict(state=saved['optimizer']['state'], param_groups=[
+            dict(group, fused=fused_adamw, foreach=False if fused_adamw else None)
+            for group in saved['optimizer']['param_groups']]))
         rng.set_state(saved['point_generator_state'].cpu())
         torch.set_rng_state(saved['torch_rng'].cpu())
         torch.cuda.set_rng_state_all([state.cpu() for state in saved['cuda_rng']])
@@ -197,7 +200,9 @@ def main():
                    reprojection_feature_dim=local_dim,
                    feature_projection='Identity' if args.direct_features else f'trainable Linear({sampled_dim},368)',
                    mlp_widths=[feature_dim,128,128,128,1], all_parameters_trainable=True,
-                   optimizer=dict(name='AdamW', lr=5e-5, betas=[.9,.95], matrix_weight_decay=.02, gradient_clip=.5),
+                   optimizer=dict(name='AdamW', lr=5e-5, betas=[.9,.95], matrix_weight_decay=.02,
+                                  gradient_clip=.5, fused=fused_adamw),
+                   activation_checkpointing=model.activation_checkpointing,
                    evaluation='same E13 even native voxel 128^3 grid; [0,1] clipping',
                    shapes=shape_checks, metrics=rows, history=combined, baseline_e13=prior['metrics'])
     (out / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')

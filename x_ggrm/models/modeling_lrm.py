@@ -51,6 +51,7 @@ class ModelLRM(nn.Module):
         point_decoder_hidden_dim: int = 128,
         point_feature_dim: int | None = None,
         reprojection_channels: tuple[int, ...] | None = None,
+        activation_checkpointing: bool = True,
         ) -> None:
         super().__init__()
         
@@ -60,6 +61,7 @@ class ModelLRM(nn.Module):
         self.triplane_low_res = triplane_low_res
         self.triplane_high_res = triplane_high_res
         self.triplane_dim = triplane_dim
+        self.activation_checkpointing = activation_checkpointing
         self._encoder_type = encoder_type  # Store encoder type for forward logic
 
         # modules
@@ -195,7 +197,7 @@ class ModelLRM(nn.Module):
         N = image_feats.shape[0]
 
         # transformer generating planes - 训练时使用checkpointing节省内存
-        if self.training:
+        if self.training and self.activation_checkpointing:
             tokens = torch.utils.checkpoint.checkpoint(
                 self.forward_transformer, image_feats, use_reentrant=False
             )

@@ -23,6 +23,7 @@ model:
   patch_pos_embed: true
   point_feature_dim: null
   point_decoder_hidden_dim: 128
+  activation_checkpointing: false
   reprojection_channels:
   - 16
   - 32
@@ -50,6 +51,7 @@ train:
     tv_weight: 0.0
     vol_mse_weight: 1.0
   optim:
+    fused: true
     lr: 5.0e-05
     weight_decay: 0.02
     beta1: 0.9

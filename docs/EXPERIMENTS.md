@@ -40,6 +40,7 @@
 | E21 | 11-21 | DeepSparse 风格重投影局部特征分支 | 实现及 100 步配对验证完成 | 新分支 21.1301、原 384 维 17.4510 dB；长期待验证 |
 | E22 | 11-21 | 重投影模型重新分配至总共 368 维 | 从零 100 步验证完成 | 三平面 144 + 二维 224，21.0536 dB |
 | E23 | 11-21 | 368 维重投影模型完整状态续训 | 累计 5,000 步完成 | 末步 27.9975 dB、3D SSIM 0.8789；已记录最高 28.0245 dB |
+| E24 | 11-21 | 保持结构和监督的训练加速 | 性能及 100 步续训验证完成 | 关闭激活重算 + fused AdamW，短程约 1.24 倍加速 |
 
 ## E01 原始 10 视角微调
 
@@ -494,6 +495,27 @@ LNDb-0045、相同 24 帧，从随机初始化拟合 100 步。CT 点 MSE、每�
 已从保存预测重算 PSNR/3D SSIM，检查最终模型与预测体数值有限。最终全局步数和 AdamW 更新计数均为 5,000，MLP 首层为 128×368，最终点生成器状态与 E20 的 384 维 XLRM 一致。
 
 运行结果位于 `results/XLRM/lndb0045_reprojection368_resume5000_20261121/`，完整结果为 `summary.json`、`metrics.csv`、`step5000.pth`、`step5000.npy`，最终核验为 `final_qa.json`。`curves.png` 和 `comparison.png` 由拟合入口生成，后者显示 E13 的 96 维第 1,000 步与本轮第 5,000 步，步数已在标题标注。相邻同名 `.launch.sh`、`.log`、`.pid`、`.exit` 记录实际启动方式、日志、容器 PID 和完成状态。
+
+## E24 保持模型与监督的训练速度优化
+
+2026-11-21 完成性能分析、代码配置优化及短程验证。GPU0 H100 PCIe 80 GB，base_cy / ct，PyTorch 2.7.1+cu128。沿用 E23 的 368 维结构、LNDb-0045、24 视角、每步 10,000 CT 点、CT MSE、BF16 和原 AdamW 设置。
+
+同步计时每组预热 5 步、计时 30 步，从同一 checkpoint 的模型、优化器与随机状态恢复。原流程 130.24 ms/步，关闭三平面 Transformer 的 activation checkpointing 后为 120.88 ms，单独 fused AdamW 为 119.92 ms，组合为 105.96 ms，约 1.23 倍加速。张量峰值显存由 3.16 GiB 增至 3.87 GiB。cuDNN 自动调优无收益，未启用。
+
+每步三平面生成约 32.8 ms，局部 CNN 前向约 4.5 ms，点查询约 2.7 ms，整体反向约 67.3 ms，裁剪和 AdamW 约 19.6 ms；fused 后裁剪和 AdamW 为约 4.6 ms。原注意力已经使用 FlashAttention。一次 128³ 全体积评价中位耗时 0.410 秒，完整 checkpoint 的 torch.save 耗时 0.922 秒，未计 fsync，与原流程一致。减少保存频率不是当前主要加速来源。
+
+从 E23 第 5,000 步完整状态分别追加 100 步，两组起点预测与原文件逐元素一致，使用共同 128³ 留出网格和 [0,1] 裁剪。
+
+| 配置 | 至末次评价耗时 / 秒 | 累计 5,100 步 PSNR / dB |
+|---|---|---|
+| 原流程 | 15.2538 | 28.0105 |
+| 关闭重算 + fused AdamW | 12.3068 | 28.0762 |
+
+短程端到端加速约 1.24 倍，耗时减少约 19.3%。计时包括两次评估，不含末次评价之后的保存和绘图。两组优化器计数均为 5,100，点生成器状态相同，新配置实际启用 fused AdamW 并关闭 activation checkpointing。CUDA grid_sample / BF16 训练有数值变动，这一次短试没有观察到质量下降，不根据单次小差值宣称精度改善。没有重跑完整 5,000 步速度对照。
+
+当前配置更新为 model.activation_checkpointing=false、train.optim.fused=true。旧配置缺省保持原重算和 AdamW 后端。正式 LNDb 训练器的单步训练和 32³ 验证通过。加速模型参数结构、368 维特征、监督点数和损失保持一致，checkpoint 参数名兼容。
+
+两组追加 100 步属于独立性能验证，不并入或替换 E23 的 5,000 步结果。一次漏传 --resume 的启动已停止并排除，调试日志单独保留。最终性能证据位于 `results/XLRM/lndb0045_speed_profile_20261121/final/benchmark.json`、`final/profile.txt`，质量与耗时为同根 `quality_speed_check.json`，评估及保存耗时为 `io_profile.json`。短程状态保存在 `control5100/`、`fast5100/`，正式入口验证为 `native_smoke/smoke.json`。复现工具为 `tools/benchmark_single_case_speed.py`，说明见 [训练速度分析](TRAINING_SPEED.md)。
 
 ## 待验证的探索
 

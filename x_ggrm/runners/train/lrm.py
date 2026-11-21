@@ -80,6 +80,7 @@ class CbctLrmTrainer(Trainer, ABC):
             opt_groups,
             lr=cfg.train.optim.lr,
             betas=(cfg.train.optim.beta1, cfg.train.optim.beta2),
+            fused=bool(cfg.train.optim.get('fused', False)),
         )
 
         return optimizer

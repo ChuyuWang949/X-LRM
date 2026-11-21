@@ -37,6 +37,8 @@ flowchart LR
 
 原模型继续使用原配置和 `reprojection_channels=None`，已有参数名和形状保持兼容。当前 368 维配置改变了上采样器通道和 MLP 首层，需使用对应的新 checkpoint；当前入口不会自动改写旧权重。复现 E21 的 624 维模型时应使用该实验目录保存的 config.yaml。
 
+当前配置还采用 `model.activation_checkpointing: false` 和 `train.optim.fused: true`。E24 在 H100 80 GB 上测得约 1.23 倍单步加速，并完成两组各 100 步的续训检查，详见 [训练速度分析](TRAINING_SPEED.md)。E23 原记录使用重算和原 AdamW 后端，实验结果保持原样。
+
 单病例脚本在 `--reprojection` 模式下读取配置中的三平面通道与二维通道。`--direct-features` 表示直接拼接三平面特征，不增加线性投影。历史非重投影拟合默认仍为每面 128 通道，也可通过 `--triplane-channels` 显式指定。
 
 ```python
