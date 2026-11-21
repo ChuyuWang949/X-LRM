@@ -21,6 +21,8 @@ class LNDbLRMTrainer(CbctLrmTrainer):
             raise ValueError('CT point count must be nonnegative')
         if self.ct_points_per_case and self.ct_volume_only:
             raise ValueError('Choose CT point or full CT volume supervision')
+        if cfg.model.get('reprojection_channels') and not (self.ct_points_per_case or self.ct_volume_only):
+            raise ValueError('Reprojection branch requires CT-only supervision')
         if (self.ct_points_per_case or self.ct_volume_only) and (
             cfg.train.loss.pixel_weight != 0 or cfg.train.loss.tv_weight != 0
         ):
@@ -92,7 +94,8 @@ class LNDbLRMTrainer(CbctLrmTrainer):
 
     def forward_loss_local_step(self, data):
         if self.ct_points_per_case or self.ct_volume_only:
-            outputs = self.model(image=data['input_views'], ct_query_points=data.get('ct_query_points'))
+            outputs = self.model(image=data['input_views'], ct_query_points=data.get('ct_query_points'),
+                                 input_cameras=data.get('input_cameras'))
             if self.model.training and self.ct_points_per_case:
                 volume = F.mse_loss(outputs['ct_point_pred'], data['ct_point_targets'])
             else:

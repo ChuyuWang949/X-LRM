@@ -12,6 +12,7 @@ import torch.nn as nn
 
 from .utils.renderer import ImportanceRenderer
 from .utils.ray_sampler import RaySampler
+from ..reprojection import sample_reprojection_features
 
 
 class ShiftedSoftplus(nn.Module):
@@ -33,6 +34,7 @@ class OSGDecoder(nn.Module):
                  num_layers: int = 4,
                  activation: nn.Module = nn.ReLU,
                  point_feature_dim: int | None = None,
+                 reprojection_feature_dim: int = 0,
                  ):
 
         super().__init__()
@@ -43,7 +45,7 @@ class OSGDecoder(nn.Module):
             else nn.Linear(3 * n_features, point_feature_dim)
         )
         layers = [
-            nn.Linear(feature_dim, hidden_dim),
+            nn.Linear(feature_dim + reprojection_feature_dim, hidden_dim),
             activation(),
         ]
         for _ in range(num_layers - 2):
@@ -79,7 +81,7 @@ class OSGDecoder(nn.Module):
                 # ========================================================= #
 
     @torch.compile
-    def forward(self, sampled_features, ray_directions):
+    def forward(self, sampled_features, ray_directions, extra_features=None):
         # --- forward部分保持不变 ---
         _N, n_planes, _M, _C = sampled_features.shape
         sampled_features = sampled_features.permute(0, 2, 1, 3).reshape(_N, _M, n_planes * _C)
@@ -89,6 +91,8 @@ class OSGDecoder(nn.Module):
         x = x.contiguous().view(N * M, C)
 
         x = self.feature_projection(x)
+        if extra_features is not None:
+            x = torch.cat((x, extra_features.reshape(N * M, -1)), dim=-1)
         x = self.net(x)
         x = x.view(N, M, -1)
 
@@ -115,7 +119,7 @@ class TriplaneSynthesizer(nn.Module):
     }
 
     def __init__(self, triplane_dim: int, samples_per_ray: int, point_decoder_hidden_dim: int = 128,
-                 point_feature_dim: int | None = None):
+                 point_feature_dim: int | None = None, reprojection_feature_dim: int = 0):
         super().__init__()
 
         # attributes
@@ -132,7 +136,8 @@ class TriplaneSynthesizer(nn.Module):
 
         # modules
         self.decoder = OSGDecoder(n_features=triplane_dim, hidden_dim=point_decoder_hidden_dim,
-                                  point_feature_dim=point_feature_dim)
+                                  point_feature_dim=point_feature_dim,
+                                  reprojection_feature_dim=reprojection_feature_dim)
 
     def forward(self, planes, cameras, anchors, resolutions, region_size: int):
         # planes: (N, 3, D', H', W')
@@ -173,7 +178,7 @@ class TriplaneSynthesizer(nn.Module):
             'images_density': density_images, # N M 1 H W
         }
 
-    def forward_grid(self, planes, grid_size: int, aabb: torch.Tensor = None):
+    def forward_grid(self, planes, grid_size: int, aabb: torch.Tensor = None, **query_kwargs):
         # planes: (N, 3, D', H', W')
         # grid_size: int
         # aabb: (N, 2, 3)
@@ -196,7 +201,7 @@ class TriplaneSynthesizer(nn.Module):
                 indexing='ij',
             ), dim=-1).reshape(-1, 3))
         cube_grid = torch.stack(grid_points, dim=0).to(planes.device)
-        features = self.forward_points(planes, cube_grid)
+        features = self.forward_points(planes, cube_grid, **query_kwargs)
 
         # reshape into grid
         features = {
@@ -205,7 +210,8 @@ class TriplaneSynthesizer(nn.Module):
         }
         return features
 
-    def forward_points(self, planes, points: torch.Tensor, chunk_size: int = 2 ** 20):
+    def forward_points(self, planes, points: torch.Tensor, chunk_size: int = 2 ** 20,
+                       *, reprojection_features=None, input_cameras=None, view_mask=None):
         # planes: (N, 3, D', H', W')
         # points: (N, P, 3)
         N, P = points.shape[:2]
@@ -216,13 +222,23 @@ class TriplaneSynthesizer(nn.Module):
             chunk_points = points[:, i:i + chunk_size]
 
             # query triplane
-            chunk_out = self.renderer.run_model_activated(
-                planes=planes,
-                decoder=self.decoder,
-                sample_coordinates=chunk_points,
-                sample_directions=torch.zeros_like(chunk_points),
-                options=self.rendering_kwargs,
-            )
+            if reprojection_features is None:
+                chunk_out = self.renderer.run_model_activated(
+                    planes=planes,
+                    decoder=self.decoder,
+                    sample_coordinates=chunk_points,
+                    sample_directions=torch.zeros_like(chunk_points),
+                    options=self.rendering_kwargs,
+                )
+            else:
+                from .utils.renderer import sample_from_planes
+                local = sample_reprojection_features(
+                    reprojection_features, chunk_points, input_cameras, view_mask)
+                sampled = sample_from_planes(
+                    self.renderer.plane_axes.to(planes.device), planes, chunk_points,
+                    box_warp=self.rendering_kwargs['box_warp'])
+                chunk_out = self.decoder(sampled, torch.zeros_like(chunk_points), extra_features=local)
+                chunk_out['sigma'] = self.renderer.activation_factory(self.rendering_kwargs)(chunk_out['sigma'])
             outs.append(chunk_out)
 
         # concatenate the outputs

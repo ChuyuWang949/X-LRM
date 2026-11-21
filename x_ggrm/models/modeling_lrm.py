@@ -19,6 +19,7 @@ from accelerate.logging import get_logger
 
 from x_ggrm.models.lrm.transformer import TransformerDecoder
 from .rendering.synthesizer import TriplaneSynthesizer
+from .reprojection import ReprojectionEncoder
 
 
 logger = get_logger(__name__)
@@ -49,6 +50,7 @@ class ModelLRM(nn.Module):
         patch_pos_embed: bool = False,
         point_decoder_hidden_dim: int = 128,
         point_feature_dim: int | None = None,
+        reprojection_channels: tuple[int, ...] | None = None,
         ) -> None:
         super().__init__()
         
@@ -103,6 +105,10 @@ class ModelLRM(nn.Module):
         self.synthesizer = TriplaneSynthesizer(
             triplane_dim=triplane_dim, samples_per_ray=rendering_samples_per_ray,
             point_decoder_hidden_dim=point_decoder_hidden_dim, point_feature_dim=point_feature_dim,
+            reprojection_feature_dim=sum(reprojection_channels) if reprojection_channels else 0,
+        )
+        self.reprojection_encoder = (
+            ReprojectionEncoder(reprojection_channels) if reprojection_channels else None
         )
 
     @staticmethod
@@ -201,8 +207,27 @@ class ModelLRM(nn.Module):
 
         return planes
 
+    def encode(self, image, input_cameras=None, view_mask=None):
+        """Encode one scan; keep this returned context local to the caller/case."""
+        if self.reprojection_encoder is not None:
+            if image.ndim != 5 or image.shape[-1] != 7:
+                raise ValueError('Reprojection branch expects [B,V,H,W,7] input')
+            if input_cameras is None or input_cameras.shape != (*image.shape[:2], 25):
+                raise ValueError('Supply one 25-value input camera for every input image')
+        context = {'planes': self.forward_planes(image)}
+        if self.reprojection_encoder is not None:
+            context.update(reprojection_features=self.reprojection_encoder(image[..., :1].permute(0, 1, 4, 2, 3)),
+                           input_cameras=input_cameras, view_mask=view_mask)
+        return context
+
+    def query_points(self, context, points, chunk_size=None):
+        if chunk_size is None:
+            chunk_size = 16384 if self.reprojection_encoder is not None else 2 ** 20
+        return self.synthesizer.forward_points(**context, points=points, chunk_size=chunk_size)
+
     def forward(self, image, render_cameras=None, render_anchors=None, render_resolutions=None,
-                render_region_size: int | None = None, *, ct_query_points=None):
+                render_region_size: int | None = None, *, ct_query_points=None,
+                input_cameras=None, input_view_mask=None):
         """
         Forward pass through the LRM model
         
@@ -223,12 +248,16 @@ class ModelLRM(nn.Module):
                 'images_density': [N, M, 1, H, W] rendered density images
             }
         """
-        planes = self.forward_planes(image)
+        if self.reprojection_encoder is not None and render_cameras is not None:
+            raise ValueError('Reprojection branch currently uses CT-only supervision; omit render cameras')
+        context = self.encode(image, input_cameras, input_view_mask)
+        planes = context['planes']
         if ct_query_points is not None:
-            densities = self.synthesizer.forward_points(planes, ct_query_points)['sigma']
+            densities = self.query_points(context, ct_query_points)['sigma']
             return {'planes': planes, 'ct_point_pred': densities}
         if render_cameras is None:
-            density = self.synthesizer.forward_grid(planes, grid_size=self.volume_grid_size)['sigma']
+            density = self.synthesizer.forward_grid(**context, grid_size=self.volume_grid_size,
+                                                  chunk_size=16384 if self.reprojection_encoder is not None else 2 ** 20)['sigma']
             return {'planes': planes, 'vol_pred': density.squeeze(-1)}
 
         assert image.shape[0] == render_cameras.shape[0], "Batch size mismatch for image and render_cameras"

@@ -28,6 +28,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--resume', type=Path, default=None, help='Restore a full training checkpoint')
     parser.add_argument('--direct-features', action='store_true', help='Use the concatenated 384D features directly')
+    parser.add_argument('--reprojection', action='store_true', help='Concatenate 240D multi-scale local projection features')
     parser.add_argument('--steps', type=int, default=1000)
     parser.add_argument('--eval-every', type=int, default=None)
     args = parser.parse_args()
@@ -43,6 +44,7 @@ def main():
     cfg.model.triplane_dim = 128
     cfg.model.point_feature_dim = None if args.direct_features else 368
     cfg.model.point_decoder_hidden_dim = 128
+    cfg.model.reprojection_channels = [16, 32, 64, 128] if args.reprojection else None
     cfg.saver.load_model = None
     cfg.train.freeze_point_decoder = False
     cfg.distillation = dict(weight=0.)
@@ -56,7 +58,9 @@ def main():
     case = prior['case']
     ds = LNDbLRMDataset(cfg, 'train')
     record = ds._read_projections(ds.names.index(case))
-    inputs = ds._encode_projections(record, np.asarray(prior['views']))[0][None].cuda()
+    encoded, _, pose = ds._encode_projections(record, np.asarray(prior['views']))
+    inputs = encoded[None].cuda()
+    input_cameras = ds.pack_cameras(pose)[None].cuda()
     ct = (torch.from_numpy(sitk.GetArrayFromImage(sitk.ReadImage(
         str(args.dataset_root / 'processed' / f'{case}.nii.gz')))).float() / 255).cuda()
     reference = ct[::2, ::2, ::2].contiguous().cpu().numpy()
@@ -66,7 +70,8 @@ def main():
     query = torch.stack(torch.meshgrid(axis, axis, axis, indexing='ij'), -1).reshape(1, -1, 3).float() / 255 * 2 - 1
     rng = torch.Generator(device='cuda').manual_seed(prior['point_seed'])
     model = ModelLRM(**cfg.model, image_res=cfg.dataset.input_image_res).cuda()
-    feature_dim = 384 if args.direct_features else 368
+    triplane_feature_dim = 384 if args.direct_features else 368
+    feature_dim = triplane_feature_dim + (240 if args.reprojection else 0)
     assert isinstance(model.synthesizer.decoder.feature_projection, torch.nn.Identity) == args.direct_features
     assert model.synthesizer.decoder.net[0].in_features == feature_dim
     assert all(p.requires_grad for p in model.parameters())
@@ -104,9 +109,10 @@ def main():
     def measure(step):
         model.eval()
         with torch.autocast('cuda', dtype=torch.bfloat16):
-            planes = model.forward_planes(inputs)
+            context = model.encode(inputs, input_cameras)
+            planes = context['planes']
             assert planes.shape == (1, 3, 128, 64, 64)
-            predictions = torch.cat([model.synthesizer.forward_points(planes, q)['sigma'].reshape(-1).float().cpu()
+            predictions = torch.cat([model.query_points(context, q)['sigma'].reshape(-1).float().cpu()
                                      for q in query.split(131072, dim=1)]).numpy().reshape(reference.shape)
         if args.resume and step == start_step:
             np.testing.assert_allclose(predictions, np.load(args.resume.parent / f'step{start_step}.npy'),
@@ -139,18 +145,20 @@ def main():
             handles.append(model.synthesizer.decoder.net[0].register_forward_pre_hook(
                 lambda module, args: shape_checks.update(mlp_input=list(args[0].shape))))
         with torch.autocast('cuda', dtype=torch.bfloat16):
-            planes = model.forward_planes(inputs)
-            prediction = model.synthesizer.forward_points(planes, xyz[None].float() / 255 * 2 - 1)['sigma'].reshape(-1)
+            context = model.encode(inputs, input_cameras)
+            prediction = model.query_points(context, xyz[None].float() / 255 * 2 - 1)['sigma'].reshape(-1)
             loss = F.mse_loss(prediction, ct[tuple(xyz.T)])
         for handle in handles:
             handle.remove()
         loss.backward()
         if step == start_step + 1:
-            assert shape_checks == dict(point_features=[10000, feature_dim], mlp_input=[10000, feature_dim])
+            assert shape_checks == dict(point_features=[10000, triplane_feature_dim], mlp_input=[10000, feature_dim])
             if not args.direct_features:
                 assert model.synthesizer.decoder.feature_projection.weight.grad.norm() > 0
             assert model.upsampler.weight.grad.norm() > 0
             assert model.synthesizer.decoder.net[0].weight.grad.norm() > 0
+            if args.reprojection:
+                assert model.reprojection_encoder.stages[0][0].weight.grad.norm() > 0
         torch.nn.utils.clip_grad_norm_(parameters, .5, error_if_nonfinite=True)
         optimizer.step()
         losses.append(float(loss.detach()))
@@ -173,9 +181,12 @@ def main():
                    model_seed=42, point_seed=prior['point_seed'], steps=args.steps,
                    point_samples_sha256=point_hash.hexdigest() if start_step == 0 else None,
                    points_per_step=10000,
-                   point_hash_scope='E13 probe batches 1,100,300,600,1000' if start_step == 0 else 'checkpoint point generator state restored',
+                   point_hash_scope=(f'E13 probe batches {[s for s in (1,100,300,600,1000) if s <= args.steps]}'
+                                     if start_step == 0 else 'checkpoint point generator state restored'),
                    views=prior['views'], triplane_channels=128, sampled_feature_dim=384,
                    point_feature_dim=feature_dim,
+                   reprojection_channels=[16,32,64,128] if args.reprojection else None,
+                   reprojection_feature_dim=240 if args.reprojection else 0,
                    feature_projection='Identity' if args.direct_features else 'trainable Linear(384,368)',
                    mlp_widths=[feature_dim,128,128,128,1], all_parameters_trainable=True,
                    optimizer=dict(name='AdamW', lr=5e-5, betas=[.9,.95], matrix_weight_decay=.02, gradient_clip=.5),
@@ -184,7 +195,8 @@ def main():
     (out / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     fig, ax = plt.subplots(figsize=(7, 4.5), layout='constrained')
     ax.plot([r['step'] for r in prior['metrics']], [r['psnr'] for r in prior['metrics']], marker='o', label='E13 / 96 dimensions')
-    ax.plot([r['step'] for r in combined], [r['psnr'] for r in combined], marker='s', label=f'Wide planes / {feature_dim}D')
+    ax.plot([r['step'] for r in combined], [r['psnr'] for r in combined], marker='s',
+            label=f'Wide planes / {feature_dim}D' + (' / reprojection' if args.reprojection else ''))
     ax.set(xlabel='Optimizer steps from random initialization', ylabel='Held-out volume PSNR (dB)')
     ax.legend()
     fig.savefig(out / 'curves.png', dpi=180)

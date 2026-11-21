@@ -54,6 +54,7 @@ class LNDbLRMDataset(torch.utils.data.Dataset):
         self.render_size = cfg.dataset.render_image.high
         self.region = cfg.dataset.render_image.region
         self.volume_size = cfg.model.volume_grid_size
+        self.use_reprojection = bool(cfg.model.get('reprojection_channels'))
         self.ct_points_per_case = int(cfg.train.get('ct_points_per_case', 0))
         self.ct_volume_only = bool(cfg.train.get('ct_volume_only', False))
         if self.training and self.ct_points_per_case:
@@ -93,6 +94,10 @@ class LNDbLRMDataset(torch.utils.data.Dataset):
         if raw.shape != (g['numTrain'], *g['nDetector']) or len(record['angles']) != len(raw):
             raise ValueError(f'Projection geometry mismatch for {case}')
         return record
+
+    def pack_cameras(self, pose):
+        """Blender world_from_camera plus image-normalized OpenCV intrinsics."""
+        return torch.cat((pose.flatten(1), self.intrinsic.flatten()[None].expand(len(pose), -1)), dim=1)
 
     def _view_indices(self, n_acquired, views=None):
         ids = np.linspace(0, n_acquired, self.views if views is None else views, endpoint=False).astype(int)
@@ -168,11 +173,13 @@ class LNDbLRMDataset(torch.utils.data.Dataset):
         else:
             inputs, images, pose = self.projection_inputs(index, views)
 
+        source_geometry = {'input_cameras': self.pack_cameras(pose)} if self.use_reprojection else {}
+
         if self.ct_points_per_case:
             supervision = self._sample_ct_points(case) if self.training else {'vol_gt': self._load_volume(case)}
-            return dict(id=case, input_views=inputs, **supervision, **teacher)
+            return dict(id=case, input_views=inputs, **supervision, **teacher, **source_geometry)
         if self.ct_volume_only:
-            return dict(id=case, input_views=inputs, vol_gt=self._load_volume(case), **teacher)
+            return dict(id=case, input_views=inputs, vol_gt=self._load_volume(case), **teacher, **source_geometry)
 
         ids_target = (np.sort(np.random.choice(self.views, self.target_views, replace=False))
                       if self.training else
@@ -185,10 +192,9 @@ class LNDbLRMDataset(torch.utils.data.Dataset):
             anchors = torch.full((self.target_views, 2), (self.render_size - self.region) // 2)
         crops = torch.stack([image[:, y:y+self.region, x:x+self.region]
                              for image, (y, x) in zip(targets, anchors.tolist())])
-        cameras = torch.cat((pose[ids_target].flatten(1),
-                             self.intrinsic.flatten()[None].expand(self.target_views, -1)), dim=1)
+        cameras = self.pack_cameras(pose[ids_target])
         volume = self._load_volume(case)
         return dict(id=case, input_views=inputs, render_cameras=cameras,
                     render_images=crops, render_anchors=anchors,
                     render_full_resolutions=torch.full((self.target_views, 1), self.render_size),
-                    vol_gt=volume, **teacher)
+                    vol_gt=volume, **teacher, **source_geometry)

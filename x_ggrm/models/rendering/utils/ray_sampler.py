@@ -64,8 +64,9 @@ class RaySampler(torch.nn.Module):
         camera_dirs = torch.stack((x_lift, -y_lift, -z_cam), dim=-1)
         with torch.autocast(device_type=cam2world_matrix.device.type, enabled=False):
             rotation = cam2world_matrix[:, :3, :3].to(camera_dirs.dtype)
+            # Explicit sums keep this 3D transform accurate when TF32 is enabled.
             ray_dirs = torch.nn.functional.normalize(
-                torch.bmm(camera_dirs, rotation.transpose(1, 2)), dim=-1
+                (camera_dirs.unsqueeze(-2) * rotation[:, None]).sum(dim=-1), dim=-1
             )
         ray_origins = cam_locs_world.unsqueeze(1).repeat(1, ray_dirs.shape[1], 1)
 
