@@ -32,6 +32,7 @@
 | E13 | 11-20 | LNDb-0045 五方法从零等步数拟合 | 每方法 1,000 步完成 | XLRM 达 23.0107 dB，见跨方法表 |
 | E14 | 11-20 | 两病例随机初始化直接三平面拟合 | 每设置 1,000 步完成 | 同设置下病例间相差约 0.85 dB |
 | E15 | 11-21 | E13 同起点端到端、自由 tokens、自由 planes 对照 | 三组各追加 800 步完成 | A 23.8549、B 23.2807、C 23.1311 dB |
+| E16 | 11-21 | E15 A 再续训 1,000 步 | 已完成，累计 2,800 步 | 23.8549 → 24.4203 dB，AdamW 动量重置 |
 
 ## E01 原始 10 视角微调
 
@@ -272,6 +273,31 @@ E04 的 29 dB 与这组同时存在初始化、累计训练、每步采样量、
 主要文件为 summary.json、metrics.csv、point_batches.npy、initial_features.pth、upsampler_singular_values.npy、curves.png、comparison.png，以及各分支的 step0/100/300/800.npy 和 step800.pth。
 
 证据位于 `results/XLRM/lndb0045_e13_branches_20261121/` 的 `summary.json`、`metrics.csv`、`compare_e13_branches.py` 和 `README.md`。复现实验代码为 `tools/compare_e13_branches.py`。
+
+## E16 A 分支再续训 1,000 步
+
+2026-11-21 完成。正式训练直接加载 E15 A 第 800 步保存权重，起点逐体素预测与上次最终输出完全一致。沿原点采样流继续使用总步数 1,801～2,800 的 1,000 批点。
+
+| 本轮追加步数 | 从 E13 随机初始化累计步数 | 128³ 留出网格整卷 PSNR / dB |
+|---|---|---|
+| 0 | 1800 | 23.8549 |
+| 100 | 1900 | 23.9011 |
+| 300 | 2100 | 24.0525 |
+| 600 | 2400 | 24.2157 |
+| 800 | 2600 | 24.3264 |
+| 1000 | 2800 | 24.4203 |
+
+本轮增益为 0.5653 dB，最后 200 步增加 0.0939 dB。
+
+点解码器继续冻结，其余 A 分支参数参与训练。保留原训练 dropout。每步 10,000 个 CT 点，CT 密度 MSE，AdamW 学习率 5e-5、betas=(0.9,0.95)、矩阵参数 weight decay=0.02、梯度裁剪=0.5、BF16 autocast。评价继续使用 E13 相同的 128³ 偶数坐标留出网格及 [0,1] 裁剪。
+
+E15 checkpoint 只包含模型权重。曾重放 E15 A 的 800 步尝试恢复动量，最大模型权重差为 0.0064730523，未能逐元素复现。正式续训加载原保存权重并重建 AdamW，动量从零开始。本轮结果包含这次优化器重启的影响。
+
+第 100、300、600、800、1,000 步均保存模型、优化器、PyTorch/CUDA 随机数状态、点生成器状态和采样批次索引。point_batches.npy 保存本轮全部监督坐标，最终 step1000.pth 的优化器更新计数为 1,000。
+
+结果文件包括 metrics.csv、summary.json、curves.png、各评价点预测体和训练状态。原重放诊断保存在 replay_diagnostic.json。
+
+证据位于 `results/XLRM/lndb0045_e15_a_continue1000_20261121/` 的 `summary.json`、`metrics.csv`、`replay_diagnostic.json`、`README.md` 和 `step1000.pth`。复现入口为 `tools/continue_e15_a.py`。
 
 ## 待验证的探索
 
