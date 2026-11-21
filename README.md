@@ -6,6 +6,8 @@ This repository contains the model, LNDb dataset adapter, training configuration
 
 Exploratory LNDb experiments, including training budgets, initialization, evaluation protocols, and completed or pending work, are recorded in [实验记录](docs/EXPERIMENTS.md).
 
+A fixed [LNDb-0045 example](examples/LNDb-0045/README.md) includes 24 input views, a reference CT volume, projection images, and per-view camera geometry for reconstruction debugging.
+
 ## Environment
 
 The LNDb pipeline was checked with Python 3.11, PyTorch 2.7.1, and a CUDA GPU.

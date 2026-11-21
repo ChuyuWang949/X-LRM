@@ -1,0 +1,60 @@
+{
+  "case": "LNDb-0045",
+  "source_split": "train",
+  "views": 24,
+  "source_acquired_frames": 50,
+  "source_frame_indices": [
+    0,
+    2,
+    4,
+    6,
+    8,
+    10,
+    12,
+    14,
+    16,
+    18,
+    20,
+    22,
+    25,
+    27,
+    29,
+    31,
+    33,
+    35,
+    37,
+    39,
+    41,
+    43,
+    45,
+    47
+  ],
+  "source_selection": "floor(linspace(0, source_acquired_frames, views, endpoint=False))",
+  "raw_projection_shape": [
+    24,
+    512,
+    512
+  ],
+  "volume_shape": [
+    256,
+    256,
+    256
+  ],
+  "model_input_shape": [
+    24,
+    224,
+    224,
+    7
+  ],
+  "png_encoding": "uint16 PNG",
+  "png_decode_model_integral_scale": 1.658852357581341e-05,
+  "png_note": "PNG previews clamp archived negative values; floating-point NPZ arrays are the quantitative inputs.",
+  "qa": {
+    "exact_volume_roundtrip": true,
+    "exact_projection_roundtrip": true,
+    "exact_input_roundtrip": true,
+    "rigid_camera_checks_passed": true,
+    "max_camera_inverse_error": 2.220446049250313e-16,
+    "max_ray_direction_component_error": 8.77397433596272e-08
+  }
+}

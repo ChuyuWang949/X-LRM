@@ -24,3 +24,7 @@ smoke.json
 *.pickle
 *.pkl
 *.log
+
+!/examples/LNDb-0045/volume.npz
+!/examples/LNDb-0045/projections.npz
+!/examples/LNDb-0045/input_views.npz
