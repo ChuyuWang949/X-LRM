@@ -4,6 +4,8 @@ X-LRM reconstructs a 3D CT volume from sparse CBCT projections. It encodes each 
 
 This repository contains the model, LNDb dataset adapter, training configurations, and volume export tool.
 
+Exploratory LNDb experiments, including training budgets, initialization, evaluation protocols, and completed or pending work, are recorded in [实验记录](docs/EXPERIMENTS.md).
+
 ## Environment
 
 The LNDb pipeline was checked with Python 3.11, PyTorch 2.7.1, and a CUDA GPU.
