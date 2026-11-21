@@ -34,6 +34,7 @@
 | E15 | 11-21 | E13 同起点端到端、自由 tokens、自由 planes 对照 | 三组各追加 800 步完成 | A 23.8549、B 23.2807、C 23.1311 dB |
 | E16 | 11-21 | E15 A 再续训 1,000 步 | 已完成，累计 2,800 步 | 23.8549 → 24.4203 dB，AdamW 动量重置 |
 | E17 | 11-21 | 三平面扩通道并投影为 368 维点特征 | 随机初始化 1,000 步完成 | 23.2372 dB，相对 E13 增加 0.2265 dB |
+| E18 | 11-21 | 三平面直接拼接 384 维点特征 | 随机初始化 2,000 步完成 | 1,000 步 23.4963 dB，2,000 步 24.7385 dB |
 
 ## E01 原始 10 视角微调
 
@@ -325,6 +326,32 @@ AdamW 学习率为 5e-5、betas=(0.9,0.95)、矩阵参数 weight decay 为 0.02�
 step1000.pth 保存模型、优化器、PyTorch/CUDA 随机数状态、点生成器状态及模型配置。其他产物包括 config.yaml、summary.json、metrics.csv、curves.png 和 comparison.png。
 
 证据位于 `results/XLRM/lndb0045_point368_scratch1000_20261121/` 的 `config.yaml`、`summary.json`、`metrics.csv`、`README.md` 和 `step1000.pth`。复现入口为 `tools/fit_wide_point_features.py`。
+
+## E18 384 维直接点特征单病例从头拟合
+
+2026-11-21 完成。LNDb-0045、24 视角，随机初始化后训练 2,000 步，每 500 步评价并保存完整训练状态。
+
+三平面各 128 通道，双线性采样后直接拼接成 384 维，密度 MLP 为 384→128→128→128→1。模型配置 point_feature_dim=null，feature_projection 为 Identity。检查已确认 checkpoint 包含 128×384 的 MLP 首层权重。
+
+所有网络参数参与训练。模型种子 42，独立 CUDA 点采样种子 420045，每步 10,000 点，CT 点 MSE。前 1,000 步采样摘要与 E13 一致，后续按相同生成器继续。评价使用原 128³ 偶数坐标留出网格，预测裁剪到 [0,1]。
+
+AdamW 学习率为 5e-5、betas=(0.9,0.95)、矩阵参数 weight decay 为 0.02，梯度裁剪为 0.5，BF16 autocast，保留原训练模式和 dropout。
+
+| 从随机初始化训练步数 | 整卷 PSNR / dB |
+|---|---|
+| 0 | 6.7192 |
+| 500 | 21.8434 |
+| 1000 | 23.4963 |
+| 1500 | 24.2279 |
+| 2000 | 24.7385 |
+
+第 1,000 步相对 E13 的 23.0107 dB 提高 0.4856 dB。最后 500 步增加 0.5105 dB。E13 基线记录截至第 1,000 步，表中后续进展来自本轮 384 维模型。
+
+已核验真实 MLP 输入形状 [10000,384]、上采样器和解码器梯度、保存预测的 PSNR、采样摘要和最终优化器更新计数。第 500、1,000、1,500、2,000 步 checkpoint 均包含模型、优化器、PyTorch/CUDA RNG、点生成器状态和配置。
+
+主要文件包括 config.yaml、metrics.csv、summary.json、curves.png、comparison.png、各评价点的预测体及对应 step500/1000/1500/2000.pth。
+
+证据位于 `results/XLRM/lndb0045_point384_scratch2000_20261121/` 的 `config.yaml`、`summary.json`、`metrics.csv`、`README.md` 和 `step2000.pth`。复现入口为 `tools/fit_wide_point_features.py --direct-features --steps 2000 --eval-every 500`。
 
 ## 待验证的探索
 

@@ -1,4 +1,4 @@
-"""Fit a random-start XLRM with 368-dimensional point features to E13's case."""
+"""Fit random-start wide-plane XLRM point features to E13's case."""
 import argparse
 import csv
 import hashlib
@@ -26,7 +26,12 @@ def main():
     parser.add_argument('--dataset-root', type=Path, required=True)
     parser.add_argument('--e13-root', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--direct-features', action='store_true', help='Use the concatenated 384D features directly')
+    parser.add_argument('--steps', type=int, default=1000)
+    parser.add_argument('--eval-every', type=int, default=None)
     args = parser.parse_args()
+    if args.steps <= 0 or (args.eval_every is not None and args.eval_every <= 0):
+        parser.error('steps and eval-every must be positive')
     args.output.mkdir(parents=True, exist_ok=False)
     out = args.output
     torch.set_num_threads(4)
@@ -35,7 +40,7 @@ def main():
     cfg = OmegaConf.load(args.config)
     cfg.dataset.lndb_root = str(args.dataset_root)
     cfg.model.triplane_dim = 128
-    cfg.model.point_feature_dim = 368
+    cfg.model.point_feature_dim = None if args.direct_features else 368
     cfg.model.point_decoder_hidden_dim = 128
     cfg.saver.load_model = None
     cfg.train.freeze_point_decoder = False
@@ -43,6 +48,7 @@ def main():
     cfg.train.loss.pixel_weight = 0.
     cfg.train.loss.tv_weight = 0.
     cfg.train.loss.vol_mse_weight = 1.
+    cfg.single_case_fit = dict(steps=args.steps, points_per_step=10000, eval_every=args.eval_every)
     OmegaConf.save(cfg, out / 'config.yaml')
     prior = json.loads((args.e13_root / 'xlrm/summary.json').read_text())
     case = prior['case']
@@ -58,8 +64,9 @@ def main():
     query = torch.stack(torch.meshgrid(axis, axis, axis, indexing='ij'), -1).reshape(1, -1, 3).float() / 255 * 2 - 1
     rng = torch.Generator(device='cuda').manual_seed(prior['point_seed'])
     model = ModelLRM(**cfg.model, image_res=cfg.dataset.input_image_res).cuda()
-    assert model.synthesizer.decoder.feature_projection.out_features == 368
-    assert model.synthesizer.decoder.net[0].in_features == 368
+    feature_dim = 384 if args.direct_features else 368
+    assert isinstance(model.synthesizer.decoder.feature_projection, torch.nn.Identity) == args.direct_features
+    assert model.synthesizer.decoder.net[0].in_features == feature_dim
     assert all(p.requires_grad for p in model.parameters())
     parameters = list(model.parameters())
     optimizer = torch.optim.AdamW([
@@ -71,6 +78,11 @@ def main():
     point_hash = hashlib.sha256()
     stamp = time.monotonic()
     shape_checks = {}
+    evaluation_steps = (
+        set(range(args.eval_every, args.steps + 1, args.eval_every))
+        if args.eval_every else {100, 300, 600, 1000}
+    )
+    evaluation_steps.add(args.steps)
 
     @torch.no_grad()
     def measure(step):
@@ -93,7 +105,7 @@ def main():
         print(json.dumps(row), flush=True)
 
     measure(0)
-    for step in range(1, 1001):
+    for step in range(1, args.steps + 1):
         model.train()
         xyz = torch.randint(256, (12000, 3), device='cuda', generator=rng)
         xyz = xyz[(xyz % 2 == 1).any(dim=1)][:10000]
@@ -115,41 +127,45 @@ def main():
             handle.remove()
         loss.backward()
         if step == 1:
-            assert shape_checks == dict(point_features=[10000, 368], mlp_input=[10000, 368])
-            assert model.synthesizer.decoder.feature_projection.weight.grad.norm() > 0
+            assert shape_checks == dict(point_features=[10000, feature_dim], mlp_input=[10000, feature_dim])
+            if not args.direct_features:
+                assert model.synthesizer.decoder.feature_projection.weight.grad.norm() > 0
             assert model.upsampler.weight.grad.norm() > 0
             assert model.synthesizer.decoder.net[0].weight.grad.norm() > 0
         torch.nn.utils.clip_grad_norm_(parameters, .5, error_if_nonfinite=True)
         optimizer.step()
         losses.append(float(loss.detach()))
-        if step in (100, 300, 600, 1000):
+        if step in evaluation_steps:
             measure(step)
+            torch.save(dict(model=model.state_dict(), optimizer=optimizer.state_dict(),
+                            torch_rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state_all(),
+                            point_generator_state=rng.get_state(), step=step,
+                            config=OmegaConf.to_container(cfg)), out / f'step{step}.pth')
         if step % 50 == 0:
-            (out / 'progress.json').write_text(json.dumps(dict(step=step, target=1000), indent=2))
-    assert point_hash.hexdigest() == prior['point_samples_sha256']
-    torch.save(dict(model=model.state_dict(), optimizer=optimizer.state_dict(),
-                    torch_rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state_all(),
-                    point_generator_state=rng.get_state(), step=1000, config=OmegaConf.to_container(cfg)),
-               out / 'step1000.pth')
+            (out / 'progress.json').write_text(json.dumps(dict(step=step, target=args.steps), indent=2))
+    if args.steps >= 1000:
+        assert point_hash.hexdigest() == prior['point_samples_sha256']
     summary = dict(case=case, initialization='random; no model or optimizer checkpoint loaded',
-                   model_seed=42, point_seed=prior['point_seed'], steps=1000,
+                   model_seed=42, point_seed=prior['point_seed'], steps=args.steps,
                    point_samples_sha256=point_hash.hexdigest(), points_per_step=10000,
+                   point_hash_scope='E13 probe batches 1,100,300,600,1000',
                    views=prior['views'], triplane_channels=128, sampled_feature_dim=384,
-                   point_feature_dim=368, feature_projection='trainable Linear(384,368)',
-                   mlp_widths=[368,128,128,128,1], all_parameters_trainable=True,
+                   point_feature_dim=feature_dim,
+                   feature_projection='Identity' if args.direct_features else 'trainable Linear(384,368)',
+                   mlp_widths=[feature_dim,128,128,128,1], all_parameters_trainable=True,
                    optimizer=dict(name='AdamW', lr=5e-5, betas=[.9,.95], matrix_weight_decay=.02, gradient_clip=.5),
                    evaluation='same E13 even native voxel 128^3 grid; [0,1] clipping',
                    shapes=shape_checks, metrics=rows, baseline_e13=prior['metrics'])
     (out / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     fig, ax = plt.subplots(figsize=(7, 4.5), layout='constrained')
     ax.plot([r['step'] for r in prior['metrics']], [r['psnr'] for r in prior['metrics']], marker='o', label='E13 / 96 dimensions')
-    ax.plot([r['step'] for r in rows], [r['psnr'] for r in rows], marker='s', label='128 channels per plane / projected to 368')
+    ax.plot([r['step'] for r in rows], [r['psnr'] for r in rows], marker='s', label=f'Wide planes / {feature_dim}D')
     ax.set(xlabel='Optimizer steps from random initialization', ylabel='Held-out volume PSNR (dB)')
     ax.legend()
     fig.savefig(out / 'curves.png', dpi=180)
     plt.close(fig)
-    volumes = [('Reference',reference),('E13 / 96D',np.load(args.e13_root/'xlrm/step1000.npy')),
-               ('Wide planes / 368D',np.load(out/'step1000.npy'))]
+    volumes = [('Reference',reference),('E13 / 96D / 1000 steps',np.load(args.e13_root/'xlrm/step1000.npy')),
+               ('Wide planes / '+str(feature_dim)+'D / '+str(args.steps)+' steps',np.load(out/f'step{args.steps}.npy'))]
     fig, axes = plt.subplots(3,3,figsize=(8,8),layout='constrained')
     for i,(name,volume) in enumerate(volumes):
         for axis in range(3):
